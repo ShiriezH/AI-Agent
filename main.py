@@ -4,11 +4,17 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from prompts import system_prompt
+from call_function import available_functions, call_function
+
+
 def main():
     # Argument parsing
-    parser = argparse.ArgumentParser(description="Chatbot")
+    parser = argparse.ArgumentParser(description="AI Coding Agent")
     parser.add_argument("user_prompt", type=str, help="User prompt")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose output"
+    )
     args = parser.parse_args()
 
     # Load environment variables
@@ -22,39 +28,63 @@ def main():
 
     client = genai.Client(api_key=api_key)
 
-    # Create message list
+    # Build messages
     messages = [
         types.Content(
             role="user",
-            parts=[types.Part(text=args.user_prompt)]
+            parts=[types.Part(text=args.user_prompt)],
         )
     ]
 
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=messages
+            contents=messages,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                tools=[available_functions],
+                temperature=0,
+            ),
         )
 
-        if response.usage_metadata is None:
-            raise RuntimeError("No usage metadata returned from Gemini API.")
+        # Optional debug info
+        if args.verbose and response.usage_metadata:
+            print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
+            print(
+                f"Response tokens: {response.usage_metadata.candidates_token_count}"
+            )
 
-        prompt_tokens = response.usage_metadata.prompt_token_count
-        response_tokens = response.usage_metadata.candidates_token_count
+        # Text OR function calls
+        function_calls = response.function_calls
+        function_results = []
 
-        if args.verbose:
-            print(f"User prompt: {args.user_prompt}")
-            print(f"Prompt tokens: {prompt_tokens}")
-            print(f"Response tokens: {response_tokens}")
-
-        print(response.text)
+        if function_calls:
+            for fc in function_calls:
+                function_call_result = call_function(fc, verbose=args.verbose)
+                
+                if not function_call_result.parts:
+                    raise RuntimeError("Function call returned no parts")
+                
+                part = function_call_result.parts[0]
+                
+                if part.function_response is None:
+                    raise RuntimeError("Missing function_response")
+                
+                if part.function_response.response is None:
+                    raise RuntimeError("Function response was empty")
+                
+                function_results.append(part)
+                
+                if args.verbose:
+                    print(f"-> {part.function_response.response}")
+                    
+        else:
+            print(response.text)
 
     except Exception as e:
-        # Gemini API can be overloaded — don't crash
         print("Gemini API error occurred, but setup is correct.")
         print(str(e))
 
+
 if __name__ == "__main__":
     main()
-    
-    
