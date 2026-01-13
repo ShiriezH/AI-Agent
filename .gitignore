@@ -7,3 +7,7 @@
 # Python cache files
 __pycache__/
 *.pyc
+
+# Agent-generated files
+calculator/*.txt
+calculator/pkg/*.txt

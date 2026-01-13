@@ -8,27 +8,24 @@ from prompts import system_prompt
 from call_function import available_functions, call_function
 
 
+MAX_ITERATIONS = 20
+
+
 def main():
-    # Argument parsing
     parser = argparse.ArgumentParser(description="AI Coding Agent")
     parser.add_argument("user_prompt", type=str, help="User prompt")
-    parser.add_argument(
-        "--verbose", action="store_true", help="Enable verbose output"
-    )
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    # Load environment variables
     load_dotenv()
 
     api_key = os.environ.get("GEMINI_API_KEY")
-    if api_key is None:
-        raise RuntimeError(
-            "GEMINI_API_KEY not found. Make sure you have a .env file with GEMINI_API_KEY set."
-        )
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set")
 
     client = genai.Client(api_key=api_key)
 
-    # Build messages
+    # Conversation history
     messages = [
         types.Content(
             role="user",
@@ -36,7 +33,10 @@ def main():
         )
     ]
 
-    try:
+    for iteration in range(MAX_ITERATIONS):
+        if args.verbose:
+            print(f"\n--- Iteration {iteration + 1} ---")
+
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=messages,
@@ -47,43 +47,54 @@ def main():
             ),
         )
 
-        # Optional debug info
-        if args.verbose and response.usage_metadata:
-            print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
-            print(
-                f"Response tokens: {response.usage_metadata.candidates_token_count}"
-            )
+        # 1️⃣ Add model candidates to conversation
+        if not response.candidates:
+            raise RuntimeError("Model returned no candidates")
 
-        # Text OR function calls
+        for candidate in response.candidates:
+            messages.append(candidate.content)
+
+        # 2️⃣ Handle function calls (if any)
         function_calls = response.function_calls
-        function_results = []
+        function_responses = []
 
         if function_calls:
             for fc in function_calls:
                 function_call_result = call_function(fc, verbose=args.verbose)
-                
+
                 if not function_call_result.parts:
                     raise RuntimeError("Function call returned no parts")
-                
+
                 part = function_call_result.parts[0]
-                
+
                 if part.function_response is None:
                     raise RuntimeError("Missing function_response")
-                
+
                 if part.function_response.response is None:
-                    raise RuntimeError("Function response was empty")
-                
-                function_results.append(part)
-                
+                    raise RuntimeError("Empty function response")
+
+                function_responses.append(part)
+
                 if args.verbose:
                     print(f"-> {part.function_response.response}")
-                    
-        else:
-            print(response.text)
 
-    except Exception as e:
-        print("Gemini API error occurred, but setup is correct.")
-        print(str(e))
+            # 3️⃣ Feed tool results back to the model
+            messages.append(
+                types.Content(
+                    role="user",
+                    parts=function_responses,
+                )
+            )
+
+        else:
+            # 4️⃣ No function calls → final answer
+            print("\nFinal response:")
+            print(response.text)
+            return
+
+    # Loop exhausted
+    print("Error: maximum agent iterations reached without a final response")
+    raise SystemExit(1)
 
 
 if __name__ == "__main__":
